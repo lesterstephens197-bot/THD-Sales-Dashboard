@@ -96,9 +96,7 @@ if date_range and isinstance(date_range, (list, tuple)) and len(date_range) == 2
     date_mask = df["Order Date"].dt.date.between(start_date, end_date) | df["Order Date"].isna()
     df = df[date_mask]
 
-# ------------------------------------------------------------------------------
 # 单量统计逻辑
-# ------------------------------------------------------------------------------
 def get_unique_orders_count(data_frame):
     return len(data_frame)
 
@@ -107,13 +105,14 @@ st.title("📈 电商销售数据可视化看板")
 st.markdown("---")
 
 # ------------------------------------------------------------------------------
-# 3. Tab 标签页布局
+# 3. Tab 标签页布局（新增 Tab 5：7天环比对比）
 # ------------------------------------------------------------------------------
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📊 1. 总数据看板", 
     "📦 2. 产品SKU分析", 
     "👤 3. 运营绩效看板", 
-    "🗺️ 4. 全美销量分布"
+    "🗺️ 4. 全美销量分布",
+    "🔄 5. 7天 vs 7天对比"
 ])
 
 # ==============================================================================
@@ -126,7 +125,7 @@ with tab1:
     total_qty = df["Quantity"].sum() if "Quantity" in df.columns else 0
     total_orders = get_unique_orders_count(df)
     
-    # 【核心调整】：根据业务习惯，按“总销售额 ÷ 总销量”计算客单价
+    # 客单价 = 总销售额 ÷ 总销量
     aov = total_sales / total_qty if total_qty > 0 else 0
 
     col1, col2, col3, col4 = st.columns(4)
@@ -246,7 +245,7 @@ with tab3:
             op_orders = get_unique_orders_count(group)
             op_skus = group["产品SKU"].nunique() if "产品SKU" in group.columns else 0
             
-            # 【核心调整】：运营人员表里的客单价也同步调整为“销售额 ÷ 销量”
+            # 客单价 = 销售额 ÷ 销量
             op_aov = round(op_sales / op_qty, 2) if op_qty > 0 else 0
 
             op_list.append({
@@ -334,3 +333,132 @@ with tab4:
         st.dataframe(state_df_sorted, use_container_width=True, hide_index=True)
     else:
         st.info("当前筛选条件下无州份数据。")
+
+# ==============================================================================
+# 模块 5：前 7 天与后 7 天销量对比分析（新增）
+# ==============================================================================
+with tab5:
+    st.header("🔄 前 7 天 vs 后 7 天 销量环比对比")
+
+    df_valid = df.dropna(subset=["Order Date"]) if "Order Date" in df.columns else pd.DataFrame()
+
+    if not df_valid.empty:
+        # 以数据中最晚日期作为基准日期
+        max_dt = df_valid["Order Date"].max().date()
+        
+        # 1. 后 7 天（最近 7 天，含今天/最高日期）
+        recent_7_start = max_dt - timedelta(days=6)
+        recent_7_end = max_dt
+        
+        # 2. 前 7 天（较早 7 天）
+        prior_7_start = max_dt - timedelta(days=13)
+        prior_7_end = max_dt - timedelta(days=7)
+
+        # 提示当前对比的时间区间
+        st.info(f"📅 **对比区间展示**：\n"
+                f"- **【前 7 天】**：`{prior_7_start}` 至 `{prior_7_end}`\n"
+                f"- **【后 7 天】**：`{recent_7_start}` 至 `{recent_7_end}`")
+
+        # 数据切片
+        mask_prior = df_valid["Order Date"].dt.date.between(prior_7_start, prior_7_end)
+        mask_recent = df_valid["Order Date"].dt.date.between(recent_7_start, recent_7_end)
+
+        df_prior = df_valid[mask_prior]
+        df_recent = df_valid[mask_recent]
+
+        # ------------------ 1. 核心指标对比卡片 ------------------
+        p_sales = df_prior["Total Cost"].sum()
+        r_sales = df_recent["Total Cost"].sum()
+        sales_diff = r_sales - p_sales
+        sales_pct = (sales_diff / p_sales * 100) if p_sales > 0 else 0
+
+        p_qty = df_prior["Quantity"].sum()
+        r_qty = df_recent["Quantity"].sum()
+        qty_diff = r_qty - p_qty
+        qty_pct = (qty_diff / p_qty * 100) if p_qty > 0 else 0
+
+        p_orders = get_unique_orders_count(df_prior)
+        r_orders = get_unique_orders_count(df_recent)
+        orders_diff = r_orders - p_orders
+        orders_pct = (orders_diff / p_orders * 100) if p_orders > 0 else 0
+
+        p_aov = p_sales / p_qty if p_qty > 0 else 0
+        r_aov = r_sales / r_qty if r_qty > 0 else 0
+        aov_diff = r_aov - p_aov
+        aov_pct = (aov_diff / p_aov * 100) if p_aov > 0 else 0
+
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("后7天 销售额 (\()", f"\){r_sales:,.2f}", f"{sales_pct:+.1f}\% (${sales_diff:+,.2f})")
+        c2.metric("后7天 销量 (件)", f"{r_qty:,}", f"{qty_pct:+.1f}% ({qty_diff:+,}件)")
+        c3.metric("后7天 单量 (笔)", f"{r_orders:,}", f"{orders_pct:+.1f}% ({orders_diff:+,}笔)")
+        c4.metric("后7天 客单价 (\()", f"\){r_aov:,.2f}", f"{aov_pct:+.1f}\% (${aov_diff:+,.2f})")
+
+        st.markdown("---")
+
+        # ------------------ 2. SKU 维度升降对比表 ------------------
+        st.subheader("📦 SKU 销量升降变化表")
+
+        if "产品SKU" in df_valid.columns:
+            # 前7天按SKU统计
+            prior_sku = df_prior.groupby("产品SKU").agg(
+                前7天销量=("Quantity", "sum"),
+                前7天销售额=("Total Cost", "sum")
+            ).reset_index()
+
+            # 后7天按SKU统计
+            recent_sku = df_recent.groupby("产品SKU").agg(
+                后7天销量=("Quantity", "sum"),
+                后7天销售额=("Total Cost", "sum")
+            ).reset_index()
+
+            # 合并数据
+            sku_diff_df = pd.merge(recent_sku, prior_sku, on="产品SKU", how="outer").fillna(0)
+            
+            sku_diff_df["销量变化(件)"] = sku_diff_df["后7天销量"] - sku_diff_df["前7天销量"]
+            sku_diff_df["销量增长率(%)"] = sku_diff_df.apply(
+                lambda row: (row["销量变化(件)"] / row["前7天销量"] * 100) if row["前7天销量"] > 0 else (100.0 if row["后7天销量"] > 0 else 0.0), 
+                axis=1
+            )
+            sku_diff_df["销售额变化($)"] = sku_diff_df["后7天销售额"] - sku_diff_df["前7天销售额"]
+
+            # 按销量增量从大到小排序
+            sku_diff_df = sku_diff_df.sort_values(by="销量变化(件)", ascending=False)
+
+            col_left, col_right = st.columns(2)
+            with col_left:
+                st.markdown("#### 🔥 销量增长最快 Top 5 SKU")
+                st.dataframe(
+                    sku_diff_df.head(5)[["产品SKU", "前7天销量", "后7天销量", "销量变化(件)", "销量增长率(%)"]], 
+                    use_container_width=True, hide_index=True
+                )
+
+            with col_right:
+                st.markdown("#### 📉 销量下滑最严重 Top 5 SKU")
+                st.dataframe(
+                    sku_diff_df.sort_values(by="销量变化(件)", ascending=True).head(5)[["产品SKU", "前7天销量", "后7天销量", "销量变化(件)", "销量增长率(%)"]], 
+                    use_container_width=True, hide_index=True
+                )
+
+            st.markdown("#### 完整 SKU 7天对比明细")
+            st.dataframe(sku_diff_df, use_container_width=True, hide_index=True)
+
+            # ------------------ 3. 可视化柱状图 ------------------
+            st.markdown("---")
+            st.subheader("📊 销量变化 Top 10 SKU 柱状对比图")
+            
+            top10_diff = sku_diff_df.head(10)
+            fig_compare = go.Figure()
+            fig_compare.add_trace(go.Bar(x=top10_diff["产品SKU"], y=top10_diff["前7天销量"], name="前 7 天销量", marker_color='lightslategrey'))
+            fig_compare.add_trace(go.Bar(x=top10_diff["产品SKU"], y=top10_diff["后7天销量"], name="后 7 天销量", marker_color='crimson'))
+
+            fig_compare.update_layout(
+                barmode='group',
+                title="前 7 天 vs 后 7 天 Top SKU 销量直观对比",
+                xaxis_title="产品 SKU",
+                yaxis_title="销量 (件)",
+                legend=dict(x=0.01, y=0.99)
+            )
+            st.plotly_chart(fig_compare, use_container_width=True)
+
+    else:
+        st.info("当前筛选条件下无日期数据，无法生成 7 天对比看板。")
