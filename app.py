@@ -342,10 +342,8 @@ with tab4:
 with tab5:
     st.header("📅 周销量环比对比 (前一周 vs 当前周 vs 后一周)")
     
-    # 基础数据准备：基于未过滤日期的全局数据或当前过滤条件数据
-    df_week_base = df_raw.copy()
-    if selected_operator != "全部" and "运营" in df_week_base.columns:
-        df_week_base = df_week_base[df_week_base["运营"] == selected_operator]
+    # 基础数据准备：基于当前过滤条件数据
+    df_week_base = df.copy()
 
     if not df_week_base.empty and "Order Date" in df_week_base.columns:
         df_week_valid = df_week_base.dropna(subset=["Order Date"]).copy()
@@ -370,7 +368,6 @@ with tab5:
         
         if len(all_weeks) >= 1:
             with col_w2:
-                # 默认选择最近或中间的周作为目标“当前周”
                 week_options_str = [w.strftime("%Y-%m-%d (周一)") for w in all_weeks]
                 default_idx = len(all_weeks) - 1  # 默认选中最新一周
                 selected_week_str = st.selectbox("选择基准目标周 (W):", week_options_str, index=default_idx)
@@ -411,7 +408,7 @@ with tab5:
             with col_m1:
                 st.info(f"⬅️ **前一周 (W-1)**\n\n起始日期: {prev_week.strftime('%Y-%m-%d')}")
                 st.metric("前一周销量 (件)", f"{qty_prev:,}")
-                st.metric("前一周销售额 (\()", f"\){sales_prev:,.2f}")
+                st.metric("前一周销售额 (USD)", f"${sales_prev:,.2f}")
 
             # 当前周 W
             with col_m2:
@@ -420,7 +417,7 @@ with tab5:
                 
                 st.success(f"🎯 **基准周 (W)**\n\n起始日期: {chosen_week.strftime('%Y-%m-%d')}")
                 st.metric("当前周销量 (件)", f"{qty_curr:,}", delta=f"较前一周: {delta_qty_vs_prev}")
-                st.metric("当前周销售额 (\()", f"\){sales_curr:,.2f}", delta=f"较前一周: {delta_sales_vs_prev}")
+                st.metric("当前周销售额 (USD)", f"${sales_curr:,.2f}", delta=f"较前一周: {delta_sales_vs_prev}")
 
             # 后一周 W+1
             with col_m3:
@@ -429,31 +426,33 @@ with tab5:
 
                 st.warning(f"➡️ **后一周 (W+1)**\n\n起始日期: {next_week.strftime('%Y-%m-%d')}")
                 st.metric("后一周销量 (件)", f"{qty_next:,}", delta=f"较基准周: {delta_qty_vs_curr}")
-                st.metric("后一周销售额 (\()", f"\){sales_next:,.2f}", delta=f"较基准周: {delta_sales_vs_curr}")
+                st.metric("后一周销售额 (USD)", f"${sales_next:,.2f}", delta=f"较基准周: {delta_sales_vs_curr}")
 
             # 柱状图直观展现
             st.markdown("### 📈 3周销量与销售额柱状对比图")
+            
+            # 使用简化的英文列名，规避特殊符号/格式化导致的报错
             compare_df = pd.DataFrame([
-                {"周期": "前一周 (W-1)", "销量 (件)": qty_prev, "销售额 ($)": sales_prev, "周起始": prev_week.strftime("%Y-%m-%d")},
-                {"周期": "基准周 (W)", "销量 (件)": qty_curr, "销售额 ($)": sales_curr, "周起始": chosen_week.strftime("%Y-%m-%d")},
-                {"周期": "后一周 (W+1)", "销量 (件)": qty_next, "销售额 ($)": sales_next, "周起始": next_week.strftime("%Y-%m-%d")}
+                {"period": "前一周 (W-1)", "qty": qty_prev, "sales": sales_prev, "week_start": prev_week.strftime("%Y-%m-%d")},
+                {"period": "基准周 (W)", "qty": qty_curr, "sales": sales_curr, "week_start": chosen_week.strftime("%Y-%m-%d")},
+                {"period": "后一周 (W+1)", "qty": qty_next, "sales": sales_next, "week_start": next_week.strftime("%Y-%m-%d")}
             ])
 
             fig_comp = go.Figure()
             fig_comp.add_trace(go.Bar(
-                x=compare_df["周期"], 
-                y=compare_df["销量 (件)"], 
+                x=compare_df["period"], 
+                y=compare_df["qty"], 
                 name="销量 (件)", 
-                text=compare_df["销量 (件)"], 
+                text=compare_df["qty"], 
                 textposition='auto',
                 marker_color='indigo'
             ))
             fig_comp.add_trace(go.Scatter(
-                x=compare_df["周期"], 
-                y=compare_df["销售额 ($)"], 
+                x=compare_df["period"], 
+                y=compare_df["sales"], 
                 name="销售额 ($)", 
                 mode='lines+markers+text',
-                text=[f"\({s:,.0f}" for s in compare_df["销售额 (\))"]],
+                text=[f"${s:,.0f}" for s in compare_df["sales"]],
                 textposition='top center',
                 yaxis="y2",
                 line=dict(color='firebrick', width=3)
