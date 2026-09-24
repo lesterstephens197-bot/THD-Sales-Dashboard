@@ -12,12 +12,13 @@ st.set_page_config(
 )
 
 # ------------------------------------------------------------------------------
-# 1. 数据加载与预处理（解决 UploadedFile 无法被 Hash 的报错）
+# 1. 数据加载与预处理（支持 .xlsx/.xls 文件）
 # ------------------------------------------------------------------------------
 @st.cache_data(hash_funcs={"streamlit.runtime.uploaded_file_manager.UploadedFile": lambda x: x.name}, show_spinner=False)
 def load_data(file):
     if file is not None:
-        df = pd.read_csv(file)
+        # 使用 pd.read_excel 读取 Excel 文件
+        df = pd.read_excel(file)
     else:
         # 若未上传文件，生成模拟数据供演示
         data = {
@@ -61,7 +62,8 @@ def load_data(file):
 # 2. 侧边栏：文件上传与全局筛选
 # ------------------------------------------------------------------------------
 st.sidebar.title("🔍 数据筛选与设置")
-uploaded_file = st.sidebar.file_uploader("上传 CSV 销售数据", type=["csv"])
+# 允许上传 xlsx 与 xls 格式文件
+uploaded_file = st.sidebar.file_uploader("上传 Excel 销售数据", type=["xlsx", "xls"])
 
 df_raw = load_data(uploaded_file)
 
