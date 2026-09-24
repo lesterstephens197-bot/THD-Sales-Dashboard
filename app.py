@@ -180,11 +180,9 @@ with tab2:
             total_sales_sku = group["Total Cost"].sum() if "Total Cost" in group.columns else 0
             total_qty_sku = group["Quantity"].sum() if "Quantity" in group.columns else 0
             
-            # 动销天数
             active_days = group["Order Date"].dt.date.nunique() if "Order Date" in group.columns else 1
             avg_daily_qty = round(total_qty_sku / active_days, 2) if active_days > 0 else 0
             
-            # 近 7 天 & 近 15 天销量
             if "Order Date" in group.columns:
                 qty_7d = group[group["Order Date"] >= d7_cutoff]["Quantity"].sum()
                 qty_15d = group[group["Order Date"] >= d15_cutoff]["Quantity"].sum()
@@ -247,7 +245,6 @@ with tab3:
             op_orders = get_unique_orders_count(group)
             op_skus = group["产品SKU"].nunique() if "产品SKU" in group.columns else 0
             
-            # 客单价 = 销售额 ÷ 销量
             op_aov = round(op_sales / op_qty, 2) if op_qty > 0 else 0
 
             op_list.append({
@@ -342,56 +339,56 @@ with tab4:
 with tab5:
     st.header("📅 周销量环比对比 (前一周 vs 当前周 vs 后一周)")
     
-    # 基础数据准备：基于当前过滤条件数据
     df_week_base = df.copy()
 
     if not df_week_base.empty and "Order Date" in df_week_base.columns:
         df_week_valid = df_week_base.dropna(subset=["Order Date"]).copy()
-        
-        # 添加周编号标识 (按周起始日，以周一为准)
         df_week_valid["Week_Start"] = df_week_valid["Order Date"].dt.to_period("W").dt.start_time
         
-        # 1. 独立筛选：SKU 选择
-        col_w1, col_w2 = st.columns([1, 2])
+        # 1. 产品 SKU 多筛选机制
+        col_w1, col_w2 = st.columns([1, 1])
         with col_w1:
-            all_skus_week = ["全部 SKU"] + list(df_week_valid["产品SKU"].dropna().unique()) if "产品SKU" in df_week_valid.columns else ["全部 SKU"]
-            selected_week_sku = st.selectbox("选择筛选产品 SKU:", all_skus_week, key="week_sku_select")
+            all_skus_available = sorted(list(df_week_valid["产品SKU"].dropna().unique())) if "产品SKU" in df_week_valid.columns else []
+            selected_skus = st.multiselect(
+                "🔍 选择筛选产品 SKU (支持多选，留空默认为全部):", 
+                options=all_skus_available,
+                default=[],
+                key="multiselect_skus"
+            )
 
-        # 根据 SKU 过滤周数据
-        if selected_week_sku != "全部 SKU":
-            df_week_filtered = df_week_valid[df_week_valid["产品SKU"] == selected_week_sku]
+        # SKU 过滤处理
+        if selected_skus:
+            df_week_filtered = df_week_valid[df_week_valid["产品SKU"].isin(selected_skus)]
+            sku_label_str = ", ".join(selected_skus[:3]) + (f" 等{len(selected_skus)}个" if len(selected_skus) > 3 else "")
         else:
             df_week_filtered = df_week_valid.copy()
+            sku_label_str = "全部 SKU"
 
-        # 获取所有可供选择的周（按起始日期排序）
+        # 获取当前数据集所有的自然周（按起始日期排序）
         all_weeks = sorted(df_week_valid["Week_Start"].unique())
         
         if len(all_weeks) >= 1:
             with col_w2:
                 week_options_str = [w.strftime("%Y-%m-%d (周一)") for w in all_weeks]
                 default_idx = len(all_weeks) - 1  # 默认选中最新一周
-                selected_week_str = st.selectbox("选择基准目标周 (W):", week_options_str, index=default_idx)
-                
-                # 对应解析出 chosen_week
+                selected_week_str = st.selectbox("🎯 选择基准目标周 (W):", week_options_str, index=default_idx)
                 chosen_week = all_weeks[week_options_str.index(selected_week_str)]
 
-            # 计算前一周 W-1 和 后一周 W+1 的 Week_Start
+            # 对应的前一周与后一周
             prev_week = chosen_week - pd.Timedelta(days=7)
             next_week = chosen_week + pd.Timedelta(days=7)
 
-            # 获取三周的汇总数据逻辑函数
+            # 获取周指标数据函数
             def get_week_metrics(data_df, target_week):
                 sub_df = data_df[data_df["Week_Start"] == target_week]
                 qty = sub_df["Quantity"].sum() if "Quantity" in sub_df.columns else 0
                 sales = sub_df["Total Cost"].sum() if "Total Cost" in sub_df.columns else 0.0
-                orders = get_unique_orders_count(sub_df)
-                return qty, sales, orders
+                return qty, sales
 
-            qty_prev, sales_prev, orders_prev = get_week_metrics(df_week_filtered, prev_week)
-            qty_curr, sales_curr, orders_curr = get_week_metrics(df_week_filtered, chosen_week)
-            qty_next, sales_next, orders_next = get_week_metrics(df_week_filtered, next_week)
+            qty_prev, sales_prev = get_week_metrics(df_week_filtered, prev_week)
+            qty_curr, sales_curr = get_week_metrics(df_week_filtered, chosen_week)
+            qty_next, sales_next = get_week_metrics(df_week_filtered, next_week)
 
-            # 计算环比变化幅度函数
             def calc_delta(current, baseline):
                 if baseline == 0:
                     return "N/A" if current == 0 else "+100%"
@@ -400,17 +397,15 @@ with tab5:
                 return f"{pct:+.1f}%"
 
             st.markdown("---")
-            st.subheader("📊 3周核心数据对比指标")
+            st.subheader(f"📊 【{sku_label_str}】3周核心数据对比指标")
 
             col_m1, col_m2, col_m3 = st.columns(3)
 
-            # 前一周 W-1
             with col_m1:
                 st.info(f"⬅️ **前一周 (W-1)**\n\n起始日期: {prev_week.strftime('%Y-%m-%d')}")
                 st.metric("前一周销量 (件)", f"{qty_prev:,}")
                 st.metric("前一周销售额 (USD)", f"${sales_prev:,.2f}")
 
-            # 当前周 W
             with col_m2:
                 delta_qty_vs_prev = calc_delta(qty_curr, qty_prev)
                 delta_sales_vs_prev = calc_delta(sales_curr, sales_prev)
@@ -419,7 +414,6 @@ with tab5:
                 st.metric("当前周销量 (件)", f"{qty_curr:,}", delta=f"较前一周: {delta_qty_vs_prev}")
                 st.metric("当前周销售额 (USD)", f"${sales_curr:,.2f}", delta=f"较前一周: {delta_sales_vs_prev}")
 
-            # 后一周 W+1
             with col_m3:
                 delta_qty_vs_curr = calc_delta(qty_next, qty_curr)
                 delta_sales_vs_curr = calc_delta(sales_next, sales_curr)
@@ -428,14 +422,12 @@ with tab5:
                 st.metric("后一周销量 (件)", f"{qty_next:,}", delta=f"较基准周: {delta_qty_vs_curr}")
                 st.metric("后一周销售额 (USD)", f"${sales_next:,.2f}", delta=f"较基准周: {delta_sales_vs_curr}")
 
-            # 柱状图直观展现
-            st.markdown("### 📈 3周销量与销售额柱状对比图")
-            
-            # 使用简化的英文列名，规避特殊符号/格式化导致的报错
+            # 图表展现
+            st.markdown("### 📈 3周总销量与销售额柱状对比图")
             compare_df = pd.DataFrame([
-                {"period": "前一周 (W-1)", "qty": qty_prev, "sales": sales_prev, "week_start": prev_week.strftime("%Y-%m-%d")},
-                {"period": "基准周 (W)", "qty": qty_curr, "sales": sales_curr, "week_start": chosen_week.strftime("%Y-%m-%d")},
-                {"period": "后一周 (W+1)", "qty": qty_next, "sales": sales_next, "week_start": next_week.strftime("%Y-%m-%d")}
+                {"period": "前一周 (W-1)", "qty": qty_prev, "sales": sales_prev},
+                {"period": "基准周 (W)", "qty": qty_curr, "sales": sales_curr},
+                {"period": "后一周 (W+1)", "qty": qty_next, "sales": sales_next}
             ])
 
             fig_comp = go.Figure()
@@ -459,7 +451,7 @@ with tab5:
             ))
 
             fig_comp.update_layout(
-                title=f"【{selected_week_sku}】前/中/后三周对比概览",
+                title=f"【{sku_label_str}】前/中/后三周总量趋势",
                 xaxis_title="对比周期",
                 yaxis=dict(title="销量 (件)"),
                 yaxis2=dict(title="销售额 ($)", overlaying="y", side="right"),
@@ -467,27 +459,74 @@ with tab5:
             )
             st.plotly_chart(fig_comp, use_container_width=True)
 
-            # 展现三周内每天的日销量曲线
-            st.markdown("### 🔍 三周每日销量明细趋势图")
-            three_weeks_start = prev_week
-            three_weeks_end = next_week + pd.Timedelta(days=6)
+            # 如果用户筛选了 SKU 或想看分 SKU 细分对比
+            st.markdown("---")
+            st.subheader("📦 各 SKU 详细三周销量对比表")
             
-            df_3w_daily = df_week_filtered[
-                (df_week_filtered["Order Date"].dt.date >= three_weeks_start.date()) & 
-                (df_week_filtered["Order Date"].dt.date <= three_weeks_end.date())
-            ]
+            # 提取这三周的所有 SKU 销量数据
+            three_weeks = [prev_week, chosen_week, next_week]
+            df_3w_skus = df_week_filtered[df_week_filtered["Week_Start"].isin(three_weeks)]
             
-            if not df_3w_daily.empty:
-                daily_3w_summary = df_3w_daily.groupby(df_3w_daily["Order Date"].dt.date)["Quantity"].sum().reset_index()
-                fig_3w_daily = px.line(
-                    daily_3w_summary,
-                    x="Order Date",
-                    y="Quantity",
-                    markers=True,
-                    title="前/中/后 21天每日销量波动图",
-                    labels={"Order Date": "日期", "Quantity": "日销量 (件)"}
+            if not df_3w_skus.empty and "产品SKU" in df_3w_skus.columns:
+                sku_pivot = df_3w_skus.pivot_table(
+                    index=["产品SKU"], 
+                    columns="Week_Start", 
+                    values="Quantity", 
+                    aggfunc="sum", 
+                    fill_value=0
+                ).reset_index()
+
+                # 重命名列名以便阅读
+                col_rename = {
+                    prev_week: "前一周销量 (W-1)",
+                    chosen_week: "基准周销量 (W)",
+                    next_week: "后一周销量 (W+1)"
+                }
+                sku_pivot.rename(columns=col_rename, inplace=True)
+                
+                # 确保所需列存在
+                for col in ["前一周销量 (W-1)", "基准周销量 (W)", "后一周销量 (W+1)"]:
+                    if col not in sku_pivot.columns:
+                        sku_pivot[col] = 0
+
+                # 计算环比变化率
+                sku_pivot["较前一周变化 (%)"] = sku_pivot.apply(
+                    lambda r: calc_delta(r["基准周销量 (W)"], r["前一周销量 (W-1)"]), axis=1
                 )
-                st.plotly_chart(fig_3w_daily, use_container_width=True)
+                sku_pivot["较后一周变化 (%)"] = sku_pivot.apply(
+                    lambda r: calc_delta(r["后一周销量 (W+1)"], r["基准周销量 (W)"]), axis=1
+                )
+
+                # 按基准周销量排序
+                sku_pivot = sku_pivot.sort_values(by="基准周销量 (W)", ascending=False)
+                
+                # 展现表格
+                st.dataframe(
+                    sku_pivot[["产品SKU", "前一周销量 (W-1)", "基准周销量 (W)", "较前一周变化 (%)", "后一周销量 (W+1)", "较后一周变化 (%)"]],
+                    use_container_width=True,
+                    hide_index=True
+                )
+
+                # 如果选择了具体多个 SKU，展示分 SKU 的多柱状对比图
+                if selected_skus and len(selected_skus) > 1:
+                    st.markdown("### 📊 所选 SKU 的三周销量分组对比")
+                    df_melted = pd.melt(
+                        sku_pivot, 
+                        id_vars=["产品SKU"], 
+                        value_vars=["前一周销量 (W-1)", "基准周销量 (W)", "后一周销量 (W+1)"],
+                        var_name="周期", 
+                        value_name="销量 (件)"
+                    )
+                    fig_sku_group = px.bar(
+                        df_melted, 
+                        x="产品SKU", 
+                        y="销量 (件)", 
+                        color="周期", 
+                        barmode="group",
+                        text_auto=True,
+                        title="分 SKU 柱状对比图"
+                    )
+                    st.plotly_chart(fig_sku_group, use_container_width=True)
 
         else:
             st.warning("数据集中可用的周数据不足，请扩大筛选日期范围。")
