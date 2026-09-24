@@ -12,9 +12,9 @@ st.set_page_config(
 )
 
 # ------------------------------------------------------------------------------
-# 1. 数据加载与预处理
+# 1. 数据加载与预处理（解决 UploadedFile 无法被 Hash 的报错）
 # ------------------------------------------------------------------------------
-@st.cache_data
+@st.cache_data(hash_funcs={"streamlit.runtime.uploaded_file_manager.UploadedFile": lambda x: x.name}, show_spinner=False)
 def load_data(file):
     if file is not None:
         df = pd.read_csv(file)
@@ -57,9 +57,12 @@ def load_data(file):
     
     return df
 
-# 侧边栏：文件上传与全局筛选
+# ------------------------------------------------------------------------------
+# 2. 侧边栏：文件上传与全局筛选
+# ------------------------------------------------------------------------------
 st.sidebar.title("🔍 数据筛选与设置")
-uploaded_file = st.sidebar.file_file_uploader if hasattr(st.sidebar, 'file_file_uploader') else st.sidebar.file_uploader("上传 CSV 销售数据", type=["csv"])
+uploaded_file = st.sidebar.file_uploader("上传 CSV 销售数据", type=["csv"])
+
 df_raw = load_data(uploaded_file)
 
 # 运营人员筛选
@@ -71,23 +74,26 @@ min_date = df_raw["Order Date"].min().date()
 max_date = df_raw["Order Date"].max().date()
 date_range = st.sidebar.date_input("选择订单日期范围", [min_date, max_date], min_value=min_date, max_value=max_date)
 
-# 过滤数据（剔除已取消状态以确保销售额准确，可调整）
+# 数据过滤逻辑
 df = df_raw.copy()
+
+# 剔除已取消的订单（可按需调整）
 if "Line Status" in df.columns:
     df = df[df["Line Status"] != "Cancelled"]
 
 if selected_operator != "全部":
     df = df[df["运营"] == selected_operator]
 
-if len(date_range) == 2:
+if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
     start_date, end_date = date_range
     df = df[(df["Order Date"].dt.date >= start_date) & (df["Order Date"].dt.date <= end_date)]
 
+# 页面标题
 st.title("📈 电商销售数据可视化看板")
 st.markdown("---")
 
 # ------------------------------------------------------------------------------
-# Tab 布局定义
+# 3. Tab 标签页布局
 # ------------------------------------------------------------------------------
 tab1, tab2, tab3, tab4 = st.tabs([
     "📊 1. 总数据看板", 
@@ -105,7 +111,7 @@ with tab1:
     total_sales = df["Total Cost"].sum()
     total_qty = df["Quantity"].sum()
     total_orders = df["Customer Order Number"].nunique()
-    aov = total_sales / total_orders if total_orders > 0 else 0 # 平均客单价 (AOV)
+    aov = total_sales / total_orders if total_orders > 0 else 0  # 平均客单价
 
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("总销售额 (USD)", f"${total_sales:,.2f}")
@@ -143,66 +149,67 @@ with tab1:
 with tab2:
     st.header("产品 SKU 维度的深入分析")
 
-    # 计算 SKU 维度基础指标
-    latest_date = df["Order Date"].max()
-    d7_cutoff = latest_date - timedelta(days=7)
-    d15_cutoff = latest_date - timedelta(days=15)
+    if not df.empty:
+        latest_date = df["Order Date"].max()
+        d7_cutoff = latest_date - timedelta(days=7)
+        d15_cutoff = latest_date - timedelta(days=15)
 
-    sku_stats = []
-    for sku, group in df.groupby("产品SKU"):
-        prod_name = group["产品名称"].iloc[0]
-        total_sales_sku = group["Total Cost"].sum()
-        total_qty_sku = group["Quantity"].sum()
+        sku_stats = []
+        for sku, group in df.groupby("产品SKU"):
+            prod_name = group["产品名称"].iloc[0] if "产品名称" in group.columns else "-"
+            total_sales_sku = group["Total Cost"].sum()
+            total_qty_sku = group["Quantity"].sum()
+            
+            # 动销天数 (有销售记录的不同天数)
+            active_days = group["Order Date"].dt.date.nunique()
+            # 日均销量 (总销量 / 动销天数)
+            avg_daily_qty = round(total_qty_sku / active_days, 2) if active_days > 0 else 0
+            
+            # 近 7 天 & 近 15 天销量
+            qty_7d = group[group["Order Date"] >= d7_cutoff]["Quantity"].sum()
+            qty_15d = group[group["Order Date"] >= d15_cutoff]["Quantity"].sum()
+
+            sku_stats.append({
+                "产品SKU": sku,
+                "产品名称": prod_name,
+                "总销售额 ($)": total_sales_sku,
+                "总销量": total_qty_sku,
+                "动销天数": active_days,
+                "日均销量": avg_daily_qty,
+                "近7天销量": qty_7d,
+                "近15天销量": qty_15d
+            })
+
+        df_sku_summary = pd.DataFrame(sku_stats).sort_values(by="总销量", ascending=False)
+        df_sku_summary["销量排名"] = range(1, len(df_sku_summary) + 1)
         
-        # 动销天数 (有销售记录的不同天数)
-        active_days = group["Order Date"].dt.date.nunique()
-        # 日均销量 (总销量 / 动销天数)
-        avg_daily_qty = round(total_qty_sku / active_days, 2) if active_days > 0 else 0
+        cols_order = ["销量排名", "产品SKU", "产品名称", "总销量", "总销售额 ($)", "动销天数", "日均销量", "近7天销量", "近15天销量"]
+        df_sku_summary = df_sku_summary[cols_order]
+
+        st.subheader("🏆 SKU 综合排行榜")
+        st.dataframe(df_sku_summary, use_container_width=True, hide_index=True)
+
+        st.markdown("---")
+        st.subheader("🔍 单个 SKU 历史销量趋势查询")
         
-        # 近 7 天 & 近 15 天销量
-        qty_7d = group[group["Order Date"] >= d7_cutoff]["Quantity"].sum()
-        qty_15d = group[group["Order Date"] >= d15_cutoff]["Quantity"].sum()
+        sku_list = df["产品SKU"].unique()
+        selected_sku = st.selectbox("搜索或选择产品 SKU:", sku_list)
 
-        sku_stats.append({
-            "产品SKU": sku,
-            "产品名称": prod_name,
-            "总销售额 ($)": total_sales_sku,
-            "总销量": total_qty_sku,
-            "动销天数": active_days,
-            "日均销量": avg_daily_qty,
-            "近7天销量": qty_7d,
-            "近15天销量": qty_15d
-        })
-
-    df_sku_summary = pd.DataFrame(sku_stats).sort_values(by="总销量", ascending=False)
-    df_sku_summary["销量排名"] = range(1, len(df_sku_summary) + 1)
-    
-    # 调整列顺序
-    cols_order = ["销量排名", "产品SKU", "产品名称", "总销量", "总销售额 ($)", "动销天数", "日均销量", "近7天销量", "近15天销量"]
-    df_sku_summary = df_sku_summary[cols_order]
-
-    st.subheader("🏆 SKU 综合排行榜")
-    st.dataframe(df_sku_summary, use_container_width=True, hide_index=True)
-
-    st.markdown("---")
-    st.subheader("🔍 单个 SKU 历史销量趋势查询")
-    
-    sku_list = df["产品SKU"].unique()
-    selected_sku = st.selectbox("搜索或选择产品 SKU:", sku_list)
-
-    if selected_sku:
-        df_single_sku = df[df["产品SKU"] == selected_sku]
-        sku_daily = df_single_sku.groupby(df_single_sku["Order Date"].dt.date)["Quantity"].sum().reset_index()
-        
-        fig_sku = px.line(
-            sku_daily, 
-            x="Order Date", 
-            y="Quantity", 
-            title=f"SKU: {selected_sku} 日销量变化趋势",
-            markers=True,
-            labels={"Order Date": "日期", "Quantity": "销量 (件)"}
-        )
-        st.plotly_chart(fig_sku, use_container_width=True)
+        if selected_sku:
+            df_single_sku = df[df["产品SKU"] == selected_sku]
+            sku_daily = df_single_sku.groupby(df_single_sku["Order Date"].dt.date)["Quantity"].sum().reset_index()
+            
+            fig_sku = px.line(
+                sku_daily, 
+                x="Order Date", 
+                y="Quantity", 
+                title=f"SKU: {selected_sku} 日销量变化趋势",
+                markers=True,
+                labels={"Order Date": "日期", "Quantity": "销量 (件)"}
+            )
+            st.plotly_chart(fig_sku, use_container_width=True)
+    else:
+        st.info("当前筛选条件下无数据。")
 
 # ==============================================================================
 # 模块 3：按照运营维度的数据看板
@@ -210,40 +217,43 @@ with tab2:
 with tab3:
     st.header("运营人员业绩看板")
 
-    op_summary = df.groupby("运营").agg(
-        总销售额=("Total Cost", "sum"),
-        总销量=("Quantity", "sum"),
-        订单总数=("Customer Order Number", "nunique"),
-        负责SKU数=("产品SKU", "nunique")
-    ).reset_index()
+    if not df.empty and "运营" in df.columns:
+        op_summary = df.groupby("运营").agg(
+            总销售额=("Total Cost", "sum"),
+            总销量=("Quantity", "sum"),
+            订单总数=("Customer Order Number", "nunique"),
+            负责SKU数=("产品SKU", "nunique")
+        ).reset_index()
 
-    op_summary["客单价"] = (op_summary["总销售额"] / op_summary["订单总数"]).round(2)
-    op_summary = op_summary.sort_values(by="总销售额", ascending=False)
+        op_summary["客单价"] = (op_summary["总销售额"] / op_summary["订单总数"]).round(2)
+        op_summary = op_summary.sort_values(by="总销售额", ascending=False)
 
-    st.subheader("👥 运营绩效汇总表")
-    st.dataframe(op_summary, use_container_width=True, hide_index=True)
+        st.subheader("👥 运营绩效汇总表")
+        st.dataframe(op_summary, use_container_width=True, hide_index=True)
 
-    col_op1, col_op2 = st.columns(2)
-    with col_op1:
-        fig_op_sales = px.bar(
-            op_summary, 
-            x="运营", 
-            y="总销售额", 
-            text_auto=".2s",
-            title="各运营人员总销售额占比/对比",
-            color="运营"
-        )
-        st.plotly_chart(fig_op_sales, use_container_width=True)
+        col_op1, col_op2 = st.columns(2)
+        with col_op1:
+            fig_op_sales = px.bar(
+                op_summary, 
+                x="运营", 
+                y="总销售额", 
+                text_auto=".2s",
+                title="各运营人员总销售额对比",
+                color="运营"
+            )
+            st.plotly_chart(fig_op_sales, use_container_width=True)
 
-    with col_op2:
-        fig_op_qty = px.pie(
-            op_summary, 
-            names="运营", 
-            values="总销量", 
-            title="各运营人员总销量贡献占比",
-            hole=0.4
-        )
-        st.plotly_chart(fig_op_qty, use_container_width=True)
+        with col_op2:
+            fig_op_qty = px.pie(
+                op_summary, 
+                names="运营", 
+                values="总销量", 
+                title="各运营人员总销量贡献占比",
+                hole=0.4
+            )
+            st.plotly_chart(fig_op_qty, use_container_width=True)
+    else:
+        st.info("当前筛选条件下无数据。")
 
 # ==============================================================================
 # 模块 4：全美销量地图分布
@@ -251,33 +261,35 @@ with tab3:
 with tab4:
     st.header("全美各州销量地理分布")
 
-    # 统计全美各州销量
-    state_df = df.groupby("ShipTo State").agg(
-        总销量=("Quantity", "sum"),
-        总销售额=("Total Cost", "sum"),
-        订单数=("Customer Order Number", "nunique")
-    ).reset_index()
+    if not df.empty and "ShipTo State" in df.columns:
+        state_df = df.groupby("ShipTo State").agg(
+            总销量=("Quantity", "sum"),
+            总销售额=("Total Cost", "sum"),
+            订单数=("Customer Order Number", "nunique")
+        ).reset_index()
 
-    st.subheader("🗺️ 美国地图热力分布 (Choropleth Map)")
-    
-    fig_map = px.choropleth(
-        state_df,
-        locations="ShipTo State", 
-        locationmode="USA-states",
-        color="总销量",
-        scope="usa",
-        hover_data=["ShipTo State", "总销量", "总销售额", "订单数"],
-        color_continuous_scale="Reds",
-        title="全美各州订单销量分布图"
-    )
-    
-    fig_map.update_layout(
-        geo=dict(lakecolor='rgb(255, 255, 255)'),
-        margin={"r":0,"t":40,"l":0,"b":0}
-    )
-    
-    st.plotly_chart(fig_map, use_container_width=True)
+        st.subheader("🗺️ 美国地图热力分布 (Choropleth Map)")
+        
+        fig_map = px.choropleth(
+            state_df,
+            locations="ShipTo State", 
+            locationmode="USA-states",
+            color="总销量",
+            scope="usa",
+            hover_data=["ShipTo State", "总销量", "总销售额", "订单数"],
+            color_continuous_scale="Reds",
+            title="全美各州订单销量分布图"
+        )
+        
+        fig_map.update_layout(
+            geo=dict(lakecolor='rgb(255, 255, 255)'),
+            margin={"r": 0, "t": 40, "l": 0, "b": 0}
+        )
+        
+        st.plotly_chart(fig_map, use_container_width=True)
 
-    st.subheader("📋 各州数据明细排名")
-    state_df_sorted = state_df.sort_values(by="总销量", ascending=False)
-    st.dataframe(state_df_sorted, use_container_width=True, hide_index=True)
+        st.subheader("📋 各州数据明细排名")
+        state_df_sorted = state_df.sort_values(by="总销量", ascending=False)
+        st.dataframe(state_df_sorted, use_container_width=True, hide_index=True)
+    else:
+        st.info("当前筛选条件下无州份数据。")
