@@ -12,7 +12,7 @@ st.set_page_config(
 )
 
 # ------------------------------------------------------------------------------
-# 1. 数据加载与预处理
+# 1. 数据加载与预处理（支持 .xlsx/.xls 文件）
 # ------------------------------------------------------------------------------
 @st.cache_data(hash_funcs={"streamlit.runtime.uploaded_file_manager.UploadedFile": lambda x: x.name}, show_spinner=False)
 def load_data(file):
@@ -51,7 +51,7 @@ def load_data(file):
 
     # 数据类型转换与清洗
     if "Order Date" in df.columns:
-        df["Order Date"] = pd.to_datetime(df["Order Date"], errors="coerce")
+        df["Order Date"] = pd.to_datetime(df["Order Date"])
     if "Quantity" in df.columns:
         df["Quantity"] = pd.to_numeric(df["Quantity"], errors="coerce").fillna(0)
     if "Total Cost" in df.columns:
@@ -73,12 +73,10 @@ df_raw = load_data(uploaded_file)
 all_operators = ["全部"] + list(df_raw["运营"].dropna().unique()) if "运营" in df_raw.columns else ["全部"]
 selected_operator = st.sidebar.selectbox("筛选运营人员", all_operators)
 
-# 日期筛选：如果数据包含有效的 Order Date
-valid_dates = df_raw["Order Date"].dropna() if "Order Date" in df_raw.columns else pd.Series()
-
-if not valid_dates.empty:
-    min_date = valid_dates.min().date()
-    max_date = valid_dates.max().date()
+# 日期筛选
+if "Order Date" in df_raw.columns and not df_raw["Order Date"].empty:
+    min_date = df_raw["Order Date"].min().date()
+    max_date = df_raw["Order Date"].max().date()
     date_range = st.sidebar.date_input("选择订单日期范围", [min_date, max_date], min_value=min_date, max_value=max_date)
 else:
     date_range = None
@@ -86,22 +84,36 @@ else:
 # 数据过滤逻辑
 df = df_raw.copy()
 
-# 1. 运营人员过滤
+# 【关键修改】：不再执行 Line Status 的过滤，全量保留所有原始行/订单数据
+
 if selected_operator != "全部" and "运营" in df.columns:
     df = df[df["运营"] == selected_operator]
 
-# 2. 日期范围过滤（只有当范围明确设置且包含完整起止日期时才过滤）
 if date_range and isinstance(date_range, (list, tuple)) and len(date_range) == 2 and "Order Date" in df.columns:
     start_date, end_date = date_range
-    # 确保空日期的行不会直接被剔除，只有有日期的行做区间校验
-    date_mask = df["Order Date"].dt.date.between(start_date, end_date) | df["Order Date"].isna()
-    df = df[date_mask]
+    df = df[(df["Order Date"].dt.date >= start_date) & (df["Order Date"].dt.date <= end_date)]
 
 # ------------------------------------------------------------------------------
-# 单量统计逻辑（直接统计当前数据集的总行数，确保与 Excel 原始数据 1:1 吻合）
+# 判断主订单号字段 (优先 PO Number，退而选择 Customer Order Number)
 # ------------------------------------------------------------------------------
-def get_unique_orders_count(data_frame):
-    return len(data_frame)
+if "PO Number" in df.columns and df["PO Number"].notna().any():
+    order_col = "PO Number"
+elif "Customer Order Number" in df.columns and df["Customer Order Number"].notna().any():
+    order_col = "Customer Order Number"
+else:
+    order_col = None
+
+# 计算总单量的函数（按单号去重；若不存在有效单号字段，则默认返回表格总行数）
+def get_unique_orders_count(data_frame, col_name):
+    if col_name is None or col_name not in data_frame.columns:
+        return len(data_frame)
+    
+    valid_orders = data_frame[col_name].dropna().astype(str).str.strip()
+    valid_orders = valid_orders[~valid_orders.isin(["", "nan", "None", "null"])]
+    
+    # 如果去重后的单量大于 0，返回去重单号数；否则返回表格实际行数
+    count = valid_orders.nunique()
+    return count if count > 0 else len(data_frame)
 
 # 页面标题
 st.title("📈 电商销售数据可视化看板")
@@ -126,8 +138,8 @@ with tab1:
     total_sales = df["Total Cost"].sum() if "Total Cost" in df.columns else 0.0
     total_qty = df["Quantity"].sum() if "Quantity" in df.columns else 0
     
-    # 统计全量总单量
-    total_orders = get_unique_orders_count(df)
+    # 计算全量总单量（包含所有原始订单）
+    total_orders = get_unique_orders_count(df, order_col)
     aov = total_sales / total_orders if total_orders > 0 else 0  # 平均客单价
 
     col1, col2, col3, col4 = st.columns(4)
@@ -136,17 +148,16 @@ with tab1:
     col3.metric("总单量 (笔)", f"{total_orders:,}")
     col4.metric("平均客单价 (AOV)", f"${aov:,.2f}")
 
-    if "Order Date" in df.columns and not df["Order Date"].dropna().empty:
+    if "Order Date" in df.columns and not df.empty:
         st.markdown("### 销售趋势变化")
         trend_type = st.radio("按时间维度查看趋势", ["按日", "按周", "按月"], horizontal=True)
         
-        df_valid_date = df.dropna(subset=["Order Date"])
         if trend_type == "按日":
-            df_trend = df_valid_date.groupby(df_valid_date["Order Date"].dt.date).agg({"Total Cost": "sum", "Quantity": "sum"}).reset_index()
+            df_trend = df.groupby(df["Order Date"].dt.date).agg({"Total Cost": "sum", "Quantity": "sum"}).reset_index()
         elif trend_type == "按周":
-            df_trend = df_valid_date.groupby(df_valid_date["Order Date"].dt.to_period("W").dt.start_time).agg({"Total Cost": "sum", "Quantity": "sum"}).reset_index()
+            df_trend = df.groupby(df["Order Date"].dt.to_period("W").dt.start_time).agg({"Total Cost": "sum", "Quantity": "sum"}).reset_index()
         else:
-            df_trend = df_valid_date.groupby(df_valid_date["Order Date"].dt.to_period("M").dt.start_time).agg({"Total Cost": "sum", "Quantity": "sum"}).reset_index()
+            df_trend = df.groupby(df["Order Date"].dt.to_period("M").dt.start_time).agg({"Total Cost": "sum", "Quantity": "sum"}).reset_index()
 
         fig_trend = go.Figure()
         fig_trend.add_trace(go.Scatter(x=df_trend["Order Date"], y=df_trend["Total Cost"], name="销售额 ($)", mode='lines+markers', yaxis="y1"))
@@ -169,8 +180,7 @@ with tab2:
     st.header("产品 SKU 维度的深入分析")
 
     if not df.empty and "产品SKU" in df.columns:
-        valid_dates = df["Order Date"].dropna() if "Order Date" in df.columns else pd.Series()
-        latest_date = valid_dates.max() if not valid_dates.empty else datetime.today()
+        latest_date = df["Order Date"].max() if "Order Date" in df.columns else datetime.today()
         d7_cutoff = latest_date - timedelta(days=7)
         d15_cutoff = latest_date - timedelta(days=15)
 
@@ -180,8 +190,9 @@ with tab2:
             total_sales_sku = group["Total Cost"].sum() if "Total Cost" in group.columns else 0
             total_qty_sku = group["Quantity"].sum() if "Quantity" in group.columns else 0
             
-            # 动销天数
+            # 动销天数 (有销售记录的不同天数)
             active_days = group["Order Date"].dt.date.nunique() if "Order Date" in group.columns else 1
+            # 日均销量 (总销量 / 动销天数)
             avg_daily_qty = round(total_qty_sku / active_days, 2) if active_days > 0 else 0
             
             # 近 7 天 & 近 15 天销量
@@ -218,7 +229,7 @@ with tab2:
         selected_sku = st.selectbox("搜索或选择产品 SKU:", sku_list)
 
         if selected_sku and "Order Date" in df.columns:
-            df_single_sku = df[df["产品SKU"] == selected_sku].dropna(subset=["Order Date"])
+            df_single_sku = df[df["产品SKU"] == selected_sku]
             sku_daily = df_single_sku.groupby(df_single_sku["Order Date"].dt.date)["Quantity"].sum().reset_index()
             
             fig_sku = px.line(
@@ -244,7 +255,7 @@ with tab3:
         for op, group in df.groupby("运营"):
             op_sales = group["Total Cost"].sum() if "Total Cost" in group.columns else 0
             op_qty = group["Quantity"].sum() if "Quantity" in group.columns else 0
-            op_orders = get_unique_orders_count(group)
+            op_orders = get_unique_orders_count(group, order_col)
             op_skus = group["产品SKU"].nunique() if "产品SKU" in group.columns else 0
             op_aov = round(op_sales / op_orders, 2) if op_orders > 0 else 0
 
@@ -297,7 +308,7 @@ with tab4:
         for state, group in df.groupby("ShipTo State"):
             state_qty = group["Quantity"].sum() if "Quantity" in group.columns else 0
             state_sales = group["Total Cost"].sum() if "Total Cost" in group.columns else 0
-            state_orders = get_unique_orders_count(group)
+            state_orders = get_unique_orders_count(group, order_col)
 
             state_list.append({
                 "ShipTo State": state,
