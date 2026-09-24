@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 
 # 页面基础配置
 st.set_page_config(
-    page_title="电商销售数据分析看板",
+    page_title="电商销售与退货分析看板",
     page_icon="📊",
     layout="wide"
 )
@@ -15,22 +15,20 @@ st.set_page_config(
 # 1. 数据加载与预处理
 # ------------------------------------------------------------------------------
 @st.cache_data(hash_funcs={"streamlit.runtime.uploaded_file_manager.UploadedFile": lambda x: x.name}, show_spinner=False)
-def load_data(file):
+def load_order_data(file):
+    """加载并清洗出单表"""
     if file is not None:
         df = pd.read_excel(file)
     else:
-        # 若未上传文件，生成模拟数据供演示
+        # 默认生成模拟出单数据
         data = {
             "Line Status": ["Shipped", "Shipped", "Cancelled", "Shipped", "Shipped"] * 20,
             "PO Number": [f"PO{1000+i}" for i in range(100)],
             "Order Date": pd.date_range(end=datetime.today(), periods=100, freq="D"),
             "Merchant SKU": [f"MSKU-{i%5+1}" for i in range(100)],
             "Vendor SKU": [f"VSKU-{i%5+1}" for i in range(100)],
-            "OMS ID": [f"OMS-{100+i}" for i in range(100)],
             "产品名称": [f"产品 {chr(65 + i%5)}" for i in range(100)],
-            "品牌": ["Brand A", "Brand B"] * 50,
             "产品SKU": [f"SKU-00{i%5+1}" for i in range(100)],
-            "产品状态": ["在售"] * 100,
             "运营": ["张三", "李四", "王五"] * 33 + ["张三"],
             "Description": ["商品描述..."] * 100,
             "Unit Cost": [20.0, 35.5, 15.0, 50.0, 10.5] * 20,
@@ -49,31 +47,68 @@ def load_data(file):
         }
         df = pd.DataFrame(data)
 
-    # 数据类型转换与清洗
+    # 清洗出单表类型
     if "Order Date" in df.columns:
         df["Order Date"] = pd.to_datetime(df["Order Date"], errors="coerce")
-    if "Quantity" in df.columns:
-        df["Quantity"] = pd.to_numeric(df["Quantity"], errors="coerce").fillna(0)
-    if "Total Cost" in df.columns:
-        df["Total Cost"] = pd.to_numeric(df["Total Cost"], errors="coerce").fillna(0)
-    if "Unit Cost" in df.columns:
-        df["Unit Cost"] = pd.to_numeric(df["Unit Cost"], errors="coerce").fillna(0)
-    
+    for num_col in ["Quantity", "Total Cost", "Unit Cost"]:
+        if num_col in df.columns:
+            df[num_col] = pd.to_numeric(df[num_col], errors="coerce").fillna(0)
+            
+    return df
+
+@st.cache_data(hash_funcs={"streamlit.runtime.uploaded_file_manager.UploadedFile": lambda x: x.name}, show_spinner=False)
+def load_rtv_data(file):
+    """加载并清洗 RTV 退货表"""
+    if file is not None:
+        df = pd.read_excel(file)
+    else:
+        # 默认生成模拟 RTV 数据
+        data = {
+            "RTV Date": pd.date_range(end=datetime.today(), periods=20, freq="2D"),
+            "RTV Number": [f"RTV-{8000+i}" for i in range(20)],
+            "Store": ["Store A", "Store B"] * 10,
+            "PO#": [f"PO{1000+i*3}" for i in range(20)],
+            "Order Date": pd.date_range(end=datetime.today() - timedelta(days=10), periods=20, freq="2D"),
+            "PART#": [f"P-{i}" for i in range(20)],
+            "产品SKU": [f"SKU-00{i%5+1}" for i in range(20)],
+            "产品名称": [f"产品 {chr(65 + i%5)}" for i in range(20)],
+            "Brand": ["Brand A", "Brand B"] * 10,
+            "Carrier": ["FedEx", "UPS"] * 10,
+            "Reason": ["Defective", "Customer Cancel", "Wrong Item", "Damaged"] * 5,
+            "QTY": [1, 1, 2, 1, 1] * 4,
+            "UNIT COST": [20.0, 35.5, 15.0, 50.0, 10.5] * 4,
+            "Total Cost": [20.0, 35.5, 30.0, 50.0, 10.5] * 4,
+            "10%运费": [2.0, 3.55, 3.0, 5.0, 1.05] * 4,
+            "总扣款": [22.0, 39.05, 33.0, 55.0, 11.55] * 4
+        }
+        df = pd.DataFrame(data)
+
+    # 清洗 RTV 表日期和数字类型
+    for date_col in ["RTV Date", "Order Date"]:
+        if date_col in df.columns:
+            df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
+    for num_col in ["QTY", "UNIT COST", "Total Cost", "10%运费", "总扣款"]:
+        if num_col in df.columns:
+            df[num_col] = pd.to_numeric(df[num_col], errors="coerce").fillna(0)
+            
     return df
 
 # ------------------------------------------------------------------------------
 # 2. 侧边栏：文件上传与全局筛选
 # ------------------------------------------------------------------------------
-st.sidebar.title("🔍 数据筛选与设置")
-uploaded_file = st.sidebar.file_uploader("上传 Excel 销售数据", type=["xlsx", "xls"])
+st.sidebar.title("🔍 数据上传与筛选设置")
 
-df_raw = load_data(uploaded_file)
+uploaded_order_file = st.sidebar.file_uploader("1. 上传【出单表】 Excel", type=["xlsx", "xls"], key="order_file")
+uploaded_rtv_file = st.sidebar.file_uploader("2. 上传【RTV退货表】 Excel", type=["xlsx", "xls"], key="rtv_file")
+
+df_raw = load_order_data(uploaded_order_file)
+rtv_raw = load_rtv_data(uploaded_rtv_file)
 
 # 运营人员筛选
 all_operators = ["全部"] + list(df_raw["运营"].dropna().unique()) if "运营" in df_raw.columns else ["全部"]
 selected_operator = st.sidebar.selectbox("筛选运营人员", all_operators)
 
-# 日期筛选：如果数据包含有效的 Order Date
+# 日期筛选：基于出单表的 Order Date
 valid_dates = df_raw["Order Date"].dropna() if "Order Date" in df_raw.columns else pd.Series()
 
 if not valid_dates.empty:
@@ -85,36 +120,36 @@ else:
 
 # 数据过滤逻辑
 df = df_raw.copy()
+rtv_df = rtv_raw.copy()
 
 # 1. 运营人员过滤
 if selected_operator != "全部" and "运营" in df.columns:
     df = df[df["运营"] == selected_operator]
 
-# 2. 日期范围过滤
+# 2. 日期范围过滤 (出单表)
 if date_range and isinstance(date_range, (list, tuple)) and len(date_range) == 2 and "Order Date" in df.columns:
     start_date, end_date = date_range
     date_mask = df["Order Date"].dt.date.between(start_date, end_date) | df["Order Date"].isna()
     df = df[date_mask]
 
-# ------------------------------------------------------------------------------
 # 单量统计逻辑
-# ------------------------------------------------------------------------------
 def get_unique_orders_count(data_frame):
     return len(data_frame)
 
 # 页面标题
-st.title("📈 电商销售数据可视化看板")
+st.title("📈 电商销售与退货分析综合看板")
 st.markdown("---")
 
 # ------------------------------------------------------------------------------
 # 3. Tab 标签页布局
 # ------------------------------------------------------------------------------
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs([
     "📊 1. 总数据看板", 
     "📦 2. 产品SKU分析", 
     "👤 3. 运营绩效看板", 
     "🗺️ 4. 全美销量分布",
-    "📅 5. 周销量环比对比"
+    "📅 5. 周销量环比对比",
+    "🔄 6. RTV退货专项分析"
 ])
 
 # ==============================================================================
@@ -126,8 +161,6 @@ with tab1:
     total_sales = df["Total Cost"].sum() if "Total Cost" in df.columns else 0.0
     total_qty = df["Quantity"].sum() if "Quantity" in df.columns else 0
     total_orders = get_unique_orders_count(df)
-    
-    # 客单价 = 总销售额 ÷ 总销量
     aov = total_sales / total_qty if total_qty > 0 else 0
 
     col1, col2, col3, col4 = st.columns(4)
@@ -334,7 +367,7 @@ with tab4:
         st.info("当前筛选条件下无州份数据。")
 
 # ==============================================================================
-# 模块 5：周销量环比对比看板（前一周 / 当前周 / 后一周）
+# 模块 5：周销量环比对比看板
 # ==============================================================================
 with tab5:
     st.header("📅 周销量环比对比 (前一周 vs 当前周 vs 后一周)")
@@ -345,7 +378,6 @@ with tab5:
         df_week_valid = df_week_base.dropna(subset=["Order Date"]).copy()
         df_week_valid["Week_Start"] = df_week_valid["Order Date"].dt.to_period("W").dt.start_time
         
-        # 1. 产品 SKU 多筛选机制
         col_w1, col_w2 = st.columns([1, 1])
         with col_w1:
             all_skus_available = sorted(list(df_week_valid["产品SKU"].dropna().unique())) if "产品SKU" in df_week_valid.columns else []
@@ -356,7 +388,6 @@ with tab5:
                 key="multiselect_skus"
             )
 
-        # SKU 过滤处理
         if selected_skus:
             df_week_filtered = df_week_valid[df_week_valid["产品SKU"].isin(selected_skus)]
             sku_label_str = ", ".join(selected_skus[:3]) + (f" 等{len(selected_skus)}个" if len(selected_skus) > 3 else "")
@@ -364,21 +395,18 @@ with tab5:
             df_week_filtered = df_week_valid.copy()
             sku_label_str = "全部 SKU"
 
-        # 获取当前数据集所有的自然周（按起始日期排序）
         all_weeks = sorted(df_week_valid["Week_Start"].unique())
         
         if len(all_weeks) >= 1:
             with col_w2:
                 week_options_str = [w.strftime("%Y-%m-%d (周一)") for w in all_weeks]
-                default_idx = len(all_weeks) - 1  # 默认选中最新一周
+                default_idx = len(all_weeks) - 1
                 selected_week_str = st.selectbox("🎯 选择基准目标周 (W):", week_options_str, index=default_idx)
                 chosen_week = all_weeks[week_options_str.index(selected_week_str)]
 
-            # 对应的前一周与后一周
             prev_week = chosen_week - pd.Timedelta(days=7)
             next_week = chosen_week + pd.Timedelta(days=7)
 
-            # 获取周指标数据函数
             def get_week_metrics(data_df, target_week):
                 sub_df = data_df[data_df["Week_Start"] == target_week]
                 qty = sub_df["Quantity"].sum() if "Quantity" in sub_df.columns else 0
@@ -422,7 +450,6 @@ with tab5:
                 st.metric("后一周销量 (件)", f"{qty_next:,}", delta=f"较基准周: {delta_qty_vs_curr}")
                 st.metric("后一周销售额 (USD)", f"${sales_next:,.2f}", delta=f"较基准周: {delta_sales_vs_curr}")
 
-            # 图表展现
             st.markdown("### 📈 3周总销量与销售额柱状对比图")
             compare_df = pd.DataFrame([
                 {"period": "前一周 (W-1)", "qty": qty_prev, "sales": sales_prev},
@@ -459,11 +486,9 @@ with tab5:
             )
             st.plotly_chart(fig_comp, use_container_width=True)
 
-            # 如果用户筛选了 SKU 或想看分 SKU 细分对比
             st.markdown("---")
             st.subheader("📦 各 SKU 详细三周销量对比表")
             
-            # 提取这三周的所有 SKU 销量数据
             three_weeks = [prev_week, chosen_week, next_week]
             df_3w_skus = df_week_filtered[df_week_filtered["Week_Start"].isin(three_weeks)]
             
@@ -476,7 +501,6 @@ with tab5:
                     fill_value=0
                 ).reset_index()
 
-                # 重命名列名以便阅读
                 col_rename = {
                     prev_week: "前一周销量 (W-1)",
                     chosen_week: "基准周销量 (W)",
@@ -484,12 +508,10 @@ with tab5:
                 }
                 sku_pivot.rename(columns=col_rename, inplace=True)
                 
-                # 确保所需列存在
                 for col in ["前一周销量 (W-1)", "基准周销量 (W)", "后一周销量 (W+1)"]:
                     if col not in sku_pivot.columns:
                         sku_pivot[col] = 0
 
-                # 计算环比变化率
                 sku_pivot["较前一周变化 (%)"] = sku_pivot.apply(
                     lambda r: calc_delta(r["基准周销量 (W)"], r["前一周销量 (W-1)"]), axis=1
                 )
@@ -497,17 +519,14 @@ with tab5:
                     lambda r: calc_delta(r["后一周销量 (W+1)"], r["基准周销量 (W)"]), axis=1
                 )
 
-                # 按基准周销量排序
                 sku_pivot = sku_pivot.sort_values(by="基准周销量 (W)", ascending=False)
                 
-                # 展现表格
                 st.dataframe(
                     sku_pivot[["产品SKU", "前一周销量 (W-1)", "基准周销量 (W)", "较前一周变化 (%)", "后一周销量 (W+1)", "较后一周变化 (%)"]],
                     use_container_width=True,
                     hide_index=True
                 )
 
-                # 如果选择了具体多个 SKU，展示分 SKU 的多柱状对比图
                 if selected_skus and len(selected_skus) > 1:
                     st.markdown("### 📊 所选 SKU 的三周销量分组对比")
                     df_melted = pd.melt(
@@ -532,3 +551,164 @@ with tab5:
             st.warning("数据集中可用的周数据不足，请扩大筛选日期范围。")
     else:
         st.info("当前数据集中没有有效的日期字段 (Order Date)。")
+
+# ==============================================================================
+# 模块 6：RTV 退货专项分析 (新增)
+# ==============================================================================
+with tab6:
+    st.header("🔄 RTV 退货专项分析")
+
+    if rtv_df.empty:
+        st.warning("未检测到有效的 RTV 退货数据。")
+    else:
+        # 统一关键列名取值
+        rtv_qty_col = "QTY" if "QTY" in rtv_df.columns else "Quantity"
+        rtv_cost_col = "总扣款" if "总扣款" in rtv_df.columns else ("Total Cost" if "Total Cost" in rtv_df.columns else "")
+        
+        # 1. 整体核心退货 KPI
+        total_rtv_qty = rtv_df[rtv_qty_col].sum() if rtv_qty_col in rtv_df.columns else 0
+        total_rtv_cost = rtv_df[rtv_cost_col].sum() if rtv_cost_col != "" else 0.0
+        
+        # 获取出单表总销售量与总销售额作为退货率基数
+        base_order_qty = df["Quantity"].sum() if "Quantity" in df.columns else 0
+        base_order_sales = df["Total Cost"].sum() if "Total Cost" in df.columns else 0.0
+        
+        overall_qty_return_rate = (total_rtv_qty / base_order_qty * 100) if base_order_qty > 0 else 0.0
+        overall_cost_return_rate = (total_rtv_cost / base_order_sales * 100) if base_order_sales > 0 else 0.0
+
+        st.subheader("📌 核心退货指标概览")
+        rk1, rk2, rk3, rk4 = st.columns(4)
+        rk1.metric("总退货数量 (件)", f"{int(total_rtv_qty):,}")
+        rk2.metric("总退款金额 / 扣款 (USD)", f"${total_rtv_cost:,.2f}")
+        rk3.metric("数量退货率 (件数)", f"{overall_qty_return_rate:.2f}%")
+        rk4.metric("金额退货率 (金额)", f"{overall_cost_return_rate:.2f}%")
+
+        st.markdown("---")
+
+        # 2. 以产品 SKU 维度的每月退货分析
+        st.subheader("📦 SKU 每月退货明细看板 (退货数量 / 退款金额 / 退货率)")
+        
+        # 视角选择
+        sku_month_view = st.radio("选择时间归属视角:", ["按 RTV 日期 (实际退货发生月份)", "按订单日期 (出单发生月份)"], horizontal=True)
+        date_col_selected = "RTV Date" if "RTV 日期" in sku_month_view else "Order Date"
+
+        if date_col_selected in rtv_df.columns and "产品SKU" in rtv_df.columns:
+            rtv_valid_date = rtv_df.dropna(subset=[date_col_selected]).copy()
+            rtv_valid_date["Year_Month"] = rtv_valid_date[date_col_selected].dt.to_period("M").astype(str)
+            
+            # 聚合 RTV 表
+            rtv_sku_month = rtv_valid_date.groupby(["产品SKU", "Year_Month"]).agg(
+                退货数量=(rtv_qty_col, "sum"),
+                退款金额=(rtv_cost_col, "sum")
+            ).reset_index()
+
+            # 聚合出单表 (以 Order Date 的月份为基准计算销量)
+            if "Order Date" in df.columns and "产品SKU" in df.columns:
+                df_order_valid = df.dropna(subset=["Order Date"]).copy()
+                df_order_valid["Year_Month"] = df_order_valid["Order Date"].dt.to_period("M").astype(str)
+                order_sku_month = df_order_valid.groupby(["产品SKU", "Year_Month"]).agg(
+                    订单销量=("Quantity", "sum"),
+                    订单销售额=("Total Cost", "sum")
+                ).reset_index()
+
+                # 合并出单与退货数据
+                merged_sku_month = pd.merge(rtv_sku_month, order_sku_month, on=["产品SKU", "Year_Month"], how="left").fillna(0)
+            else:
+                merged_sku_month = rtv_sku_month.copy()
+                merged_sku_month["订单销量"] = 0
+                merged_sku_month["订单销售额"] = 0.0
+
+            # 计算退货率
+            merged_sku_month["数量退货率 (%)"] = merged_sku_month.apply(
+                lambda r: round((r["退货数量"] / r["订单销量"] * 100), 2) if r["订单销量"] > 0 else 0.0, axis=1
+            )
+            merged_sku_month["金额退货率 (%)"] = merged_sku_month.apply(
+                lambda r: round((r["退款金额"] / r["订单销售额"] * 100), 2) if r["订单销售额"] > 0 else 0.0, axis=1
+            )
+
+            # 重新排列并显示表格
+            show_cols = ["产品SKU", "Year_Month", "退货数量", "退款金额", "订单销量", "数量退货率 (%)", "金额退货率 (%)"]
+            merged_sku_month = merged_sku_month.sort_values(by=["Year_Month", "退货数量"], ascending=[False, False])
+            st.dataframe(merged_sku_month[show_cols], use_container_width=True, hide_index=True)
+
+            # 绘图：重点 SKU 退货趋势
+            fig_rtv_sku = px.bar(
+                merged_sku_month,
+                x="Year_Month",
+                y="退货数量",
+                color="产品SKU",
+                title="各 SKU 月度退货数量趋势",
+                barmode="group"
+            )
+            st.plotly_chart(fig_rtv_sku, use_container_width=True)
+
+        st.markdown("---")
+
+        # 3. 视角对比分析：RTV 日期 vs 订单日期 深度对比
+        st.subheader("🔍 视角对比分析：RTV 日期 vs 订单日期")
+        st.markdown("""
+        * **RTV 日期视角**：记录财务/仓库实际收到退货扣款的时间，适用于财务结算与退货库存入库监控。
+        * **订单日期视角**：将退货追溯会原始发货订单的月份，适用于评估特定批次/时间段销售产品的质量与退货表现。
+        """)
+
+        col_v1, col_v2 = st.columns(2)
+
+        # 【视角 A】：按 RTV 日期
+        with col_v1:
+            st.markdown("#### 视角 A：按 RTV 日期统计")
+            if "RTV Date" in rtv_df.columns:
+                rtv_a = rtv_df.dropna(subset=["RTV Date"]).copy()
+                rtv_a["RTV_Month"] = rtv_a["RTV Date"].dt.to_period("M").astype(str)
+                
+                summary_a = rtv_a.groupby("RTV_Month").agg(
+                    退货数量=(rtv_qty_col, "sum"),
+                    退款金额=(rtv_cost_col, "sum")
+                ).reset_index()
+
+                # 匹配当月发货总量计算宏观退货率
+                if "Order Date" in df.columns:
+                    df_m = df.dropna(subset=["Order Date"]).copy()
+                    df_m["Month"] = df_m["Order Date"].dt.to_period("M").astype(str)
+                    order_m = df_m.groupby("Month").agg(出单量=("Quantity", "sum")).reset_index()
+                    summary_a = pd.merge(summary_a, order_m, left_on="RTV_Month", right_on="Month", how="left").fillna(0)
+                    summary_a["当月退货率 (%)"] = round(summary_a["退货数量"] / summary_a["出单量"] * 100, 2)
+
+                st.dataframe(summary_a, use_container_width=True, hide_index=True)
+                fig_a = px.line(summary_a, x="RTV_Month", y="退货数量", title="按 RTV 日期退货数量趋势", markers=True)
+                st.plotly_chart(fig_a, use_container_width=True)
+
+        # 【视角 B】：按 订单日期
+        with col_v2:
+            st.markdown("#### 视角 B：按 订单日期追溯统计")
+            if "Order Date" in rtv_df.columns:
+                rtv_b = rtv_df.dropna(subset=["Order Date"]).copy()
+                rtv_b["Order_Month"] = rtv_b["Order Date"].dt.to_period("M").astype(str)
+                
+                summary_b = rtv_b.groupby("Order_Month").agg(
+                    退货数量=(rtv_qty_col, "sum"),
+                    退款金额=(rtv_cost_col, "sum")
+                ).reset_index()
+
+                if "Order Date" in df.columns:
+                    df_m = df.dropna(subset=["Order Date"]).copy()
+                    df_m["Month"] = df_m["Order Date"].dt.to_period("M").astype(str)
+                    order_m = df_m.groupby("Month").agg(出单量=("Quantity", "sum")).reset_index()
+                    summary_b = pd.merge(summary_b, order_m, left_on="Order_Month", right_on="Month", how="left").fillna(0)
+                    summary_b["对应批次退货率 (%)"] = round(summary_b["退货数量"] / summary_b["出单量"] * 100, 2)
+
+                st.dataframe(summary_b, use_container_width=True, hide_index=True)
+                fig_b = px.line(summary_b, x="Order_Month", y="退货数量", title="按 订单日期追溯退货数量趋势", markers=True, color_discrete_sequence=['orange'])
+                st.plotly_chart(fig_b, use_container_width=True)
+
+        # 退货原因分布统计
+        if "Reason" in rtv_df.columns:
+            st.markdown("---")
+            st.subheader("❓ 主要退货原因分析")
+            reason_df = rtv_df.groupby("Reason").agg(
+                退货次数=(rtv_qty_col, "count"),
+                退货总量=(rtv_qty_col, "sum"),
+                退款金额=(rtv_cost_col, "sum")
+            ).reset_index().sort_values(by="退货总量", ascending=False)
+
+            fig_reason = px.pie(reason_df, names="Reason", values="退货总量", title="退货原因占比 (按件数)", hole=0.4)
+            st.plotly_chart(fig_reason, use_container_width=True)
