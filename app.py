@@ -17,7 +17,6 @@ st.set_page_config(
 @st.cache_data(hash_funcs={"streamlit.runtime.uploaded_file_manager.UploadedFile": lambda x: x.name}, show_spinner=False)
 def load_data(file):
     if file is not None:
-        # 使用 pd.read_excel 读取 Excel 文件
         df = pd.read_excel(file)
     else:
         # 若未上传文件，生成模拟数据供演示
@@ -62,7 +61,6 @@ def load_data(file):
 # 2. 侧边栏：文件上传与全局筛选
 # ------------------------------------------------------------------------------
 st.sidebar.title("🔍 数据筛选与设置")
-# 允许上传 xlsx 与 xls 格式文件
 uploaded_file = st.sidebar.file_uploader("上传 Excel 销售数据", type=["xlsx", "xls"])
 
 df_raw = load_data(uploaded_file)
@@ -90,6 +88,25 @@ if isinstance(date_range, (list, tuple)) and len(date_range) == 2:
     start_date, end_date = date_range
     df = df[(df["Order Date"].dt.date >= start_date) & (df["Order Date"].dt.date <= end_date)]
 
+# ------------------------------------------------------------------------------
+# 判断主订单号字段 (优先 PO Number，退而选择 Customer Order Number)
+# ------------------------------------------------------------------------------
+if "PO Number" in df.columns and df["PO Number"].notna().any():
+    order_col = "PO Number"
+elif "Customer Order Number" in df.columns and df["Customer Order Number"].notna().any():
+    order_col = "Customer Order Number"
+else:
+    order_col = None
+
+# 计算有效总单量的辅助函数
+def get_unique_orders_count(data_frame, col_name):
+    if col_name is None or col_name not in data_frame.columns:
+        return len(data_frame)  # 无有效列时直接回退为统计总行数
+    valid_orders = data_frame[col_name].dropna().astype(str).str.strip()
+    # 过滤无效字符串
+    valid_orders = valid_orders[~valid_orders.isin(["", "nan", "None", "null"])]
+    return valid_orders.nunique()
+
 # 页面标题
 st.title("📈 电商销售数据可视化看板")
 st.markdown("---")
@@ -112,7 +129,9 @@ with tab1:
     
     total_sales = df["Total Cost"].sum()
     total_qty = df["Quantity"].sum()
-    total_orders = df["Customer Order Number"].nunique()
+    
+    # 准确统计总单量
+    total_orders = get_unique_orders_count(df, order_col)
     aov = total_sales / total_orders if total_orders > 0 else 0  # 平均客单价
 
     col1, col2, col3, col4 = st.columns(4)
@@ -220,15 +239,24 @@ with tab3:
     st.header("运营人员业绩看板")
 
     if not df.empty and "运营" in df.columns:
-        op_summary = df.groupby("运营").agg(
-            总销售额=("Total Cost", "sum"),
-            总销量=("Quantity", "sum"),
-            订单总数=("Customer Order Number", "nunique"),
-            负责SKU数=("产品SKU", "nunique")
-        ).reset_index()
+        op_list = []
+        for op, group in df.groupby("运营"):
+            op_sales = group["Total Cost"].sum()
+            op_qty = group["Quantity"].sum()
+            op_orders = get_unique_orders_count(group, order_col)
+            op_skus = group["产品SKU"].nunique()
+            op_aov = round(op_sales / op_orders, 2) if op_orders > 0 else 0
 
-        op_summary["客单价"] = (op_summary["总销售额"] / op_summary["订单总数"]).round(2)
-        op_summary = op_summary.sort_values(by="总销售额", ascending=False)
+            op_list.append({
+                "运营": op,
+                "总销售额": op_sales,
+                "总销量": op_qty,
+                "订单总数": op_orders,
+                "客单价": op_aov,
+                "负责SKU数": op_skus
+            })
+
+        op_summary = pd.DataFrame(op_list).sort_values(by="总销售额", ascending=False)
 
         st.subheader("👥 运营绩效汇总表")
         st.dataframe(op_summary, use_container_width=True, hide_index=True)
@@ -264,11 +292,20 @@ with tab4:
     st.header("全美各州销量地理分布")
 
     if not df.empty and "ShipTo State" in df.columns:
-        state_df = df.groupby("ShipTo State").agg(
-            总销量=("Quantity", "sum"),
-            总销售额=("Total Cost", "sum"),
-            订单数=("Customer Order Number", "nunique")
-        ).reset_index()
+        state_list = []
+        for state, group in df.groupby("ShipTo State"):
+            state_qty = group["Quantity"].sum()
+            state_sales = group["Total Cost"].sum()
+            state_orders = get_unique_orders_count(group, order_col)
+
+            state_list.append({
+                "ShipTo State": state,
+                "总销量": state_qty,
+                "总销售额": state_sales,
+                "订单数": state_orders
+            })
+
+        state_df = pd.DataFrame(state_list)
 
         st.subheader("🗺️ 美国地图热力分布 (Choropleth Map)")
         
