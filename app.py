@@ -1,232 +1,232 @@
 import streamlit as st
 import pandas as pd
-import numpy as np
 import plotly.express as px
 import plotly.graph_objects as go
 
-# 页面配置
-st.set_page_config(page_title="RTV退货与出单数据分析", layout="wide")
+# 设置页面配置
+st.set_page_config(
+    page_title="数据分析 Dashboard",
+    page_icon="📊",
+    layout="wide"
+)
 
-st.title("📊 RTV 退货与出单分析看板")
+st.title("📊 数据分析与退货率看板")
 
-# ==========================================
-# 1. 侧边栏：文件上传
-# ==========================================
+# ---------------------------------------------------------
+# Sidebar: 侧边栏文件上传
+# ---------------------------------------------------------
 st.sidebar.header("📁 数据文件上传")
 
-# 1. 出单/销售数据上传
-orders_file = st.sidebar.file_uploader(
-    "1️⃣ 出单/销售数据 (.xlsx / .csv)", 
-    type=["xlsx", "xls", "csv"], 
-    key="orders_file"
+# 1. 销售数据上传
+sales_file = st.sidebar.file_uploader(
+    "1️⃣ 销售数据 (.xlsx / .csv)", 
+    type=["xlsx", "xls", "csv"],
+    key="sales_upload"
 )
 
 # 2. RTV 退货数据上传
 rtv_file = st.sidebar.file_uploader(
     "2️⃣ RTV 退货数据 (.xlsx / .csv)", 
-    type=["xlsx", "xls", "csv"], 
-    key="rtv_file"
+    type=["xlsx", "xls", "csv"],
+    key="rtv_upload"
 )
 
-# 全局筛选过滤
+# 3. 出单数据上传
+order_file = st.sidebar.file_uploader(
+    "3️⃣ 出单数据 (.xlsx / .csv)", 
+    type=["xlsx", "xls", "csv"],
+    key="order_upload"
+)
+
+# 全局筛选器变量
 st.sidebar.markdown("---")
 st.sidebar.header("🔍 全局筛选过滤")
 
-# ==========================================
-# 2. 数据处理函数
-# ==========================================
+# ---------------------------------------------------------
+# 数据读取与预处理函数
+# ---------------------------------------------------------
 @st.cache_data
 def load_data(file):
-    if file is not None:
+    if file is None:
+        return None
+    try:
         if file.name.endswith('.csv'):
-            return pd.read_csv(file)
+            df = pd.read_csv(file)
         else:
-            return pd.read_excel(file)
-    return None
+            df = pd.read_excel(file)
+        return df
+    except Exception as e:
+        st.error(f"读取文件 {file.name} 失败: {e}")
+        return None
 
-df_orders = load_data(orders_file)
-df_rtv = load_data(rtv_file)
+sales_df = load_data(sales_file)
+rtv_df = load_data(rtv_file)
+order_df = load_data(order_file)
 
-if df_orders is not None and df_rtv is not None:
-    # --------------------------------------
-    # 2.1 出单表数据清洗与标准化
-    # --------------------------------------
-    # 指定出单表的期望表头
-    order_columns = [
-        "Line Status", "PO Number", "Order Date", "Merchant SKU", "Vendor SKU", 
-        "产品名称", "产品SKU", "Description", "Unit Cost", "Unit Cost Currency", 
-        "Quantity", "Total Cost", "ShipTo Name", "Customer Order Number", 
-        "ShipTo Address1", "ShipTo Address2", "ShipTo City", "ShipTo State", 
-        "ShipTo Country", "ShipTo Postal Code", "ShipTo Day Phone"
-    ]
-    
-    # 日期转换与格式化
-    df_orders['Order Date'] = pd.to_datetime(df_orders['Order Date'], errors='coerce')
-    df_orders['YearMonth'] = df_orders['Order Date'].dt.to_period('M').astype(str)
-    
-    # 数量确保为数值型
-    df_orders['Quantity'] = pd.to_numeric(df_orders['Quantity'], errors='coerce').fillna(0)
-    
-    # SKU 规范化（如果产品SKU缺失，借用 Merchant SKU）
-    if '产品SKU' in df_orders.columns:
-        df_orders['SKU'] = df_orders['产品SKU'].fillna(df_orders['Merchant SKU'])
+# 数据标准化处理逻辑
+def preprocess_rtv(df):
+    if df is None:
+        return None
+    df = df.copy()
+    # 兼容常见的日期列名
+    date_col = next((c for c in df.columns if c in ['Order Date', 'OrderDate', '退货日期', 'Date']), None)
+    sku_col = next((c for c in df.columns if c in ['产品SKU', 'Merchant SKU', 'SKU', 'Vendor SKU']), None)
+    qty_col = next((c for c in df.columns if c in ['Quantity', '退货数量', 'Qty']), None)
+    amount_col = next((c for c in df.columns if c in ['Total Cost', '退款金额', 'Amount', 'Total Amount']), None)
+
+    if date_col:
+        df['Order Date'] = pd.to_datetime(df[date_col], errors='coerce')
+        df['YearMonth'] = df['Order Date'].dt.to_period('M').astype(str)
+    if sku_col:
+        df['SKU_Key'] = df[sku_col].astype(str).str.strip()
+    if qty_col:
+        df['RTV_Qty'] = pd.to_numeric(df[qty_col], errors='coerce').fillna(0)
     else:
-        df_orders['SKU'] = df_orders['Merchant SKU']
-        
-    # --------------------------------------
-    # 2.2 RTV 退货数据清洗与标准化
-    # --------------------------------------
-    # 假设 RTV 表包含 Date/Order Date, SKU, Return Quantity, Refund Amount 等
-    # 自动识别日期列
-    rtv_date_col = next((c for c in df_rtv.columns if 'date' in c.lower() or '日期' in c), df_rtv.columns[0])
-    rtv_sku_col = next((c for c in df_rtv.columns if 'sku' in c.lower() or '产品' in c), df_rtv.columns[1])
-    rtv_qty_col = next((c for c in df_rtv.columns if 'qty' in c.lower() or '数量' in c or 'return' in c.lower()), None)
-    rtv_amount_col = next((c for c in df_rtv.columns if 'amount' in c.lower() or '金额' in c or 'refund' in c.lower()), None)
+        df['RTV_Qty'] = 1  # 默认计数
+    if amount_col:
+        df['RTV_Amount'] = pd.to_numeric(df[amount_col], errors='coerce').fillna(0)
+    else:
+        df['RTV_Amount'] = 0.0
 
-    df_rtv['Return Date'] = pd.to_datetime(df_rtv[rtv_date_col], errors='coerce')
-    df_rtv['YearMonth'] = df_rtv['Return Date'].dt.to_period('M').astype(str)
-    df_rtv['SKU'] = df_rtv[rtv_sku_col].astype(str)
+    return df
+
+def preprocess_orders(df):
+    if df is None:
+        return None
+    df = df.copy()
+    # 根据指定的出单表表头进行识别匹配
+    date_col = next((c for c in df.columns if c in ['Order Date', 'OrderDate', '出单日期']), None)
+    sku_col = next((c for c in df.columns if c in ['产品SKU', 'Merchant SKU', 'Vendor SKU']), None)
+    qty_col = next((c for c in df.columns if c in ['Quantity', '数量']), None)
+
+    if date_col:
+        df['Order Date'] = pd.to_datetime(df[date_col], errors='coerce')
+        df['YearMonth'] = df['Order Date'].dt.to_period('M').astype(str)
+    if sku_col:
+        df['SKU_Key'] = df[sku_col].astype(str).str.strip()
+    if qty_col:
+        df['Order_Qty'] = pd.to_numeric(df[qty_col], errors='coerce').fillna(0)
+    else:
+        df['Order_Qty'] = 1
+
+    return df
+
+# 处理数据
+rtv_processed = preprocess_rtv(rtv_df)
+order_processed = preprocess_orders(order_df)
+
+# ---------------------------------------------------------
+# 主界面展示逻辑
+# ---------------------------------------------------------
+if rtv_processed is not None and order_processed is not None:
     
-    df_rtv['Return_Qty'] = pd.to_numeric(df_rtv[rtv_qty_col], errors='coerce').fillna(1) if rtv_qty_col else 1
-    df_rtv['Refund_Amount'] = pd.to_numeric(df_rtv[rtv_amount_col], errors='coerce').fillna(0) if rtv_amount_col else 0
+    # 1. 按年月汇总 RTV 与 出单数据
+    rtv_monthly = rtv_processed.groupby('YearMonth').agg(
+        RTV_Qty=('RTV_Qty', 'sum'),
+        RTV_Amount=('RTV_Amount', 'sum')
+    ).reset_index()
 
-    # --------------------------------------
-    # 2.3 侧边栏人员/维度筛选
-    # --------------------------------------
-    if '运营人员' in df_orders.columns:
-        operators = ["全部"] + list(df_orders['运营人员'].dropna().unique())
-        selected_op = st.sidebar.selectbox("筛选运营人员", operators)
-        if selected_op != "全部":
-            df_orders = df_orders[df_orders['运营人员'] == selected_op]
+    order_monthly = order_processed.groupby('YearMonth').agg(
+        Order_Qty=('Order_Qty', 'sum')
+    ).reset_index()
 
-    # --------------------------------------
-    # 2.4 数据聚合与退货率匹配
-    # --------------------------------------
-    # 1. 按月份与SKU汇总出单量
-    orders_summary = df_orders.groupby(['YearMonth', 'SKU'])['Quantity'].sum().reset_index()
-    orders_summary.rename(columns={'Quantity': 'Order_Qty'}, inplace=True)
+    # 合并月度数据
+    monthly_merged = pd.merge(rtv_monthly, order_monthly, on='YearMonth', how='outer').fillna(0)
+    monthly_merged['Return_Rate'] = (monthly_merged['RTV_Qty'] / monthly_merged['Order_Qty']).fillna(0)
+    monthly_merged = monthly_merged.sort_values('YearMonth')
 
-    # 2. 按月份与SKU汇总退货量及退货金额
-    rtv_summary = df_rtv.groupby(['YearMonth', 'SKU']).agg({
-        'Return_Qty': 'sum',
-        'Refund_Amount': 'sum'
-    }).reset_index()
-
-    # 3. 合并出单表与退货表
-    merged_df = pd.merge(orders_summary, rtv_summary, on=['YearMonth', 'SKU'], how='outer').fillna(0)
-
-    # 4. 计算退货率 (%)
-    merged_df['Return_Rate'] = np.where(
-        merged_df['Order_Qty'] > 0, 
-        (merged_df['Return_Qty'] / merged_df['Order_Qty']) * 100, 
-        0
-    )
-
-    # 按月份汇总（用于顶部图表）
-    monthly_trend = merged_df.groupby('YearMonth').agg({
-        'Order_Qty': 'sum',
-        'Return_Qty': 'sum',
-        'Refund_Amount': 'sum'
-    }).reset_index()
-
-    monthly_trend['Monthly_Return_Rate'] = np.where(
-        monthly_trend['Order_Qty'] > 0, 
-        monthly_trend['Return_Qty'] / monthly_trend['Order_Qty'], 
-        0
-    )
-
-    # ==========================================
-    # 3. 可视化图表展示
-    # ==========================================
+    # 图表区域 1：月度退货数量与退款金额趋势 & 月度退货率趋势
     col1, col2 = st.columns(2)
 
     with col1:
         st.subheader("月度退货数量与退款金额趋势 (Order Date)")
-        fig_trend = go.Figure()
-        
-        # 退货数量柱状图
-        fig_trend.add_trace(go.Bar(
-            x=monthly_trend['YearMonth'], 
-            y=monthly_trend['Return_Qty'], 
-            name="退货数量 (件)", 
-            marker_color='#DC143C'
+        fig1 = go.Figure()
+        fig1.add_trace(go.Bar(
+            x=monthly_merged['YearMonth'],
+            y=monthly_merged['RTV_Qty'],
+            name='退货数量 (件)',
+            marker_color='#d62728'
         ))
-        
-        # 退款金额折线图（双 Y 轴）
-        fig_trend.add_trace(go.Scatter(
-            x=monthly_trend['YearMonth'], 
-            y=monthly_trend['Refund_Amount'], 
-            name="退款金额 ($)", 
-            yaxis="y2", 
-            mode='lines+markers', 
-            line=dict(color='#FFA500', width=3)
+        fig1.add_trace(go.Scatter(
+            x=monthly_merged['YearMonth'],
+            y=monthly_merged['RTV_Amount'],
+            name='退款金额 ($)',
+            yaxis='y2',
+            line=dict(color='#ff7f0e', width=3)
         ))
-
-        fig_trend.update_layout(
+        fig1.update_layout(
+            xaxis_title="月份",
             yaxis=dict(title="退货数量 (件)"),
-            yaxis2=dict(title="退款金额 ($)", overlaying="y", side="right"),
-            legend=dict(x=0.7, y=1.1, orientation="h"),
-            margin=dict(l=20, r=20, t=30, b=20)
+            yaxis2=dict(title="退款金额 ($)", overlaying='y', side='right'),
+            legend=dict(x=0.7, y=1.1, orientation="h")
         )
-        st.plotly_chart(fig_trend, use_container_width=True)
+        st.plotly_chart(fig1, use_container_width=True)
 
     with col2:
         st.subheader("月度退货率 (%) 趋势 (Order Date)")
-        fig_rate = px.line(
-            monthly_trend, 
-            x='YearMonth', 
-            y='Monthly_Return_Rate', 
+        fig2 = px.line(
+            monthly_merged,
+            x='YearMonth',
+            y='Return_Rate',
             markers=True,
-            text=monthly_trend['Monthly_Return_Rate'].apply(lambda x: f"{x:.2%}")
+            labels={'Return_Rate': '退货率', 'YearMonth': 'YearMonth'}
         )
-        fig_rate.update_traces(textposition="top center", line_color='#0055FF')
-        fig_rate.update_layout(
-            yaxis_title="退货率 (%)",
-            yaxis=dict(tickformat=".1%"),
-            margin=dict(l=20, r=20, t=30, b=20)
-        )
-        st.plotly_chart(fig_rate, use_container_width=True)
+        fig2.update_traces(line_color='#1f77b4', line_width=3)
+        fig2.update_layout(yaxis_tickformat='.2%')
+        st.plotly_chart(fig2, use_container_width=True)
 
-    # ==========================================
-    # 4. 各产品 SKU 的月度退货对比表
-    # ==========================================
     st.markdown("---")
+
+    # 2. 各产品 SKU 的月度退货对比表（数据透视）
     st.subheader("📦 各产品 SKU 的月度退货对比表")
 
-    metric_choice = st.selectbox("选择透视分析的指标:", ["退货率 (%)", "退货数量", "出单数量", "退款金额"])
-
-    metric_map = {
-        "退货率 (%)": 'Return_Rate',
-        "退货数量": 'Return_Qty',
-        "出单数量": 'Order_Qty',
-        "退款金额": 'Refund_Amount'
-    }
-
-    # 透视表构建
-    pivot_df = merged_df.pivot_table(
-        index='SKU', 
-        columns='YearMonth', 
-        values=metric_map[metric_choice], 
-        aggfunc='sum', 
-        fill_value=0
+    metric_choice = st.selectbox(
+        "选择透视分析的指标:",
+        ["退货率 (%)", "退货数量 (件)", "出单数量 (件)", "退款金额 ($)"]
     )
 
-    # 计算累计平均或合计
+    # 按 SKU 和 YearMonth 聚合 RTV 与 出单数据
+    rtv_sku_monthly = rtv_processed.groupby(['SKU_Key', 'YearMonth']).agg(
+        RTV_Qty=('RTV_Qty', 'sum'),
+        RTV_Amount=('RTV_Amount', 'sum')
+    ).reset_index()
+
+    order_sku_monthly = order_processed.groupby(['SKU_Key', 'YearMonth']).agg(
+        Order_Qty=('Order_Qty', 'sum')
+    ).reset_index()
+
+    sku_merged = pd.merge(rtv_sku_monthly, order_sku_monthly, on=['SKU_Key', 'YearMonth'], how='outer').fillna(0)
+    sku_merged['Return_Rate'] = (sku_merged['RTV_Qty'] / sku_merged['Order_Qty']).fillna(0)
+
+    # 透视表构建
     if metric_choice == "退货率 (%)":
-        # 累计平均退货率 = 累计总退货量 / 累计总出单量
-        sku_total = merged_df.groupby('SKU').agg({'Return_Qty': 'sum', 'Order_Qty': 'sum'})
-        pivot_df['累计平均退货率 (%)'] = np.where(
-            sku_total['Order_Qty'] > 0, 
-            (sku_total['Return_Qty'] / sku_total['Order_Qty']) * 100, 
-            0
-        )
-        # 格式化输出
-        formatted_pivot = pivot_df.applymap(lambda x: f"{x:.2f}%")
+        pivot_df = sku_merged.pivot(index='SKU_Key', columns='YearMonth', values='Return_Rate').fillna(0)
+        # 计算累计平均退货率
+        total_rtv = sku_merged.groupby('SKU_Key')['RTV_Qty'].sum()
+        total_order = sku_merged.groupby('SKU_Key')['Order_Qty'].sum()
+        pivot_df['累计平均退货率 (%)'] = (total_rtv / total_order).fillna(0)
+        
+        # 格式化展示为百分比
+        formatted_df = pivot_df.applymap(lambda x: f"{x:.2%}" if isinstance(x, (int, float)) else x)
+        
+    elif metric_choice == "退货数量 (件)":
+        pivot_df = sku_merged.pivot(index='SKU_Key', columns='YearMonth', values='RTV_Qty').fillna(0)
+        pivot_df['累计总退货量'] = pivot_df.sum(axis=1)
+        formatted_df = pivot_df
+
+    elif metric_choice == "出单数量 (件)":
+        pivot_df = sku_merged.pivot(index='SKU_Key', columns='YearMonth', values='Order_Qty').fillna(0)
+        pivot_df['累计总出单量'] = pivot_df.sum(axis=1)
+        formatted_df = pivot_df
+
     else:
-        pivot_df['总计'] = pivot_df.sum(axis=1)
-        formatted_pivot = pivot_df.applymap(lambda x: f"{x:,.0f}" if isinstance(x, (int, float)) else x)
+        pivot_df = sku_merged.pivot(index='SKU_Key', columns='YearMonth', values='RTV_Amount').fillna(0)
+        pivot_df['累计总退款金额'] = pivot_df.sum(axis=1)
+        formatted_df = pivot_df.applymap(lambda x: f"${x:,.2f}" if isinstance(x, (int, float)) else x)
 
-    st.dataframe(formatted_pivot, use_container_width=True)
+    st.dataframe(formatted_df, use_container_width=True)
 
-else:
-    st.info("💡 请在左侧边栏上传 **出单/销售数据** 和 **RTV 退货数据** 以开始分析。")
+elif rtv_processed is None or order_processed is None:
+    st.info("💡 请在左侧侧边栏上传 **RTV 退货数据** 和 **出单数据** 以计算和展示退货率分析看板。")
+
+# 运行命令: streamlit run app.py
